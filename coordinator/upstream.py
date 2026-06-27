@@ -5,9 +5,12 @@ level (once across the whole AsyncClient lifecycle) instead of per
 .get/.post call. The session-level timeout still applies but does not
 fire per call, so slow upstreams can starve faster ones.
 """
+import logging
 import time
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 async def call_upstream(service: str, url: str, payload: dict, timeout_s: float = 5.0):
@@ -15,11 +18,41 @@ async def call_upstream(service: str, url: str, payload: dict, timeout_s: float 
 
     Per-call timeout via `httpx.Timeout(timeout_s)` on `.post`.
     """
-    # TODO:
-    # 1. Record start_ms = time.perf_counter() * 1000.
-    # 2. async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_s)) as client:
-    #        try POST url with json=payload.
-    # 3. On TimeoutException → return {"service", "status": "timeout", ...}.
-    # 4. On any other exception → return {"service", "status": "error", "error": str(e), ...}.
-    # 5. On success → return {"service", "status": "ok", "payload": r.json(), ...}.
-    raise NotImplementedError
+    start_ms = time.perf_counter() * 1000
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_s)) as client:
+            r = await client.post(url, json=payload)
+            latency_ms = round(time.perf_counter() * 1000 - start_ms, 2)
+            result = {
+                "service": service,
+                "status": "ok",
+                "latency_ms": latency_ms,
+                "payload": r.json(),
+                "error": None,
+            }
+    except httpx.TimeoutException as exc:
+        latency_ms = round(time.perf_counter() * 1000 - start_ms, 2)
+        result = {
+            "service": service,
+            "status": "timeout",
+            "latency_ms": latency_ms,
+            "payload": None,
+            "error": str(exc),
+        }
+    except Exception as exc:
+        latency_ms = round(time.perf_counter() * 1000 - start_ms, 2)
+        result = {
+            "service": service,
+            "status": "error",
+            "latency_ms": latency_ms,
+            "payload": None,
+            "error": str(exc),
+        }
+
+    logger.info(
+        "upstream_call service=%s status=%s latency_ms=%.2f",
+        result["service"],
+        result["status"],
+        result["latency_ms"],
+    )
+    return result
